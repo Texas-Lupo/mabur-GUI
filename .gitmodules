@@ -1,3 +1,6 @@
 [submodule "third_party/devourer"]
 	path = third_party/devourer
 	url = https://github.com/gilankpam/devourer
+[submodule "third_party/lvgl"]
+	path = third_party/lvgl
+	url = https://github.com/lvgl/lvgl.git

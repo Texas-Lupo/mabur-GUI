@@ -192,6 +192,7 @@ void RcAgent::intake_arm_state_(uint64_t now_ms) {
   const bool fresh = arm_reported_ &&
                      (now_ms < last_arm_ms_ ||
                       now_ms - last_arm_ms_ <= static_cast<uint64_t>(cfg_.low_power.stale_ms));
+  fresh_arm_ = fresh;
   // The mode follows the FC's CURRENT arm state, not a one-shot latch: a
   // DISARMED report re-enters low power however many times the FC has armed
   // before. That is the post-crash case -- aircraft down, FC still

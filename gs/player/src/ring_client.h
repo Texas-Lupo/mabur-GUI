@@ -52,6 +52,7 @@ class RingClient {
     std::string ring_path, socket;
   };
   using Sink = std::function<void(AuEvent&&)>;
+  using IdleFn = std::function<bool(uint64_t now_ms)>;
 
   RingClient(Cfg cfg, Sink sink);
   ~RingClient();
@@ -61,7 +62,8 @@ class RingClient {
   // Maps the ring; doorbell connect is lazy/optional. wait_ms controls what
   // happens when the ring is not there yet: 0 tries once, >0 retries until
   // that many ms have passed, <0 retries forever.
-  bool open(int wait_ms = 0);
+  // idle_fn is called during wait intervals (return false to abort early).
+  bool open(int wait_ms = 0, IdleFn idle_fn = nullptr);
   // Pumps everything currently readable through the sink; returns count.
   // Blocking wait strategy: poll(2) on the doorbell fd with timeout_ms when
   // connected, plain timeout sleep otherwise (doorbell is an optimization,

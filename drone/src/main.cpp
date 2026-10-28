@@ -1752,7 +1752,7 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
       std::vector<uint8_t> status_req;
       mabur::msp_append_status_request(status_req);
       uint64_t last_poll_ms = 0;
-      if (cfg.low_power.enable)
+      if (cfg.msp.enable)
         src.set_message_hook([&](const mabur::MspMessage& m) {
           if (auto armed = mabur::msp_status_armed(m))
             agent.note_arm_state(*armed, now_steady_ms());
@@ -1773,7 +1773,7 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
         if (n > 0) src.on_serial_bytes(buf, static_cast<size_t>(n), now_steady_ms());
         else if (n < 0) serial.close();  // error -> reconnect
 
-        if (cfg.low_power.enable && serial.is_open()) {
+        if (cfg.msp.enable && serial.is_open()) {
           uint64_t t = now_steady_ms();
           if (t - last_poll_ms >= kArmPollMs) {
             last_poll_ms = t;
@@ -2721,6 +2721,7 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
       ti.failsafe_shed = agent.failsafe_shed();
       ti.congestion_shed = agent.congestion_shed();
       ti.low_power = agent.low_power();
+      ti.armed = agent.is_armed();
       ti.auth_reject = agent.take_auth_reject();
       ti.rec_status = vtx_rec.status_byte();
       // have_feedback() false means no RCF has EVER been accepted (still

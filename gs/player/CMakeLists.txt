@@ -30,7 +30,8 @@ add_library(mabur_player_core STATIC
   src/prime_frame.cpp)
 target_include_directories(mabur_player_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
-  PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
+  PRIVATE ${CMAKE_SOURCE_DIR}/third_party
+          ${CMAKE_SOURCE_DIR}/toolchain/staging/include)
 target_link_libraries(mabur_player_core PUBLIC mabur_gs_core pthread)
 
 # Hardware backends (rockchip mpp decode + libdrm KMS presenter): aarch64
@@ -53,11 +54,52 @@ set(MABUR_PLAYER_DECODER "mpp" CACHE STRING "maburplay HW decoder: mpp | v4l2req
 set_property(CACHE MABUR_PLAYER_DECODER PROPERTY STRINGS mpp v4l2req)
 
 # maburplay: main.cpp + the null backend are always built (host and cross).
-# Hardware backends are appended below behind MABUR_PLAYER_HW.
+# Add LVGL library
+set(LV_BUILD_CONF_PATH "${CMAKE_CURRENT_SOURCE_DIR}/src/menu/lv_conf.h" CACHE PATH "path to lv_conf.h" FORCE)
+unset(LV_BUILD_CONF_DIR CACHE)
+if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/lvgl/CMakeLists.txt")
+  add_subdirectory(${CMAKE_SOURCE_DIR}/third_party/lvgl ${CMAKE_BINARY_DIR}/lvgl EXCLUDE_FROM_ALL)
+elseif(EXISTS "${CMAKE_SOURCE_DIR}/lvgl_test/lvgl/CMakeLists.txt")
+  add_subdirectory(${CMAKE_SOURCE_DIR}/lvgl_test/lvgl ${CMAKE_BINARY_DIR}/lvgl EXCLUDE_FROM_ALL)
+else()
+  include(FetchContent)
+  FetchContent_Declare(
+    lvgl
+    GIT_REPOSITORY https://github.com/lvgl/lvgl.git
+    GIT_TAG de708f722cb1fd3c7ca6f634351ea22b31a3832c
+    GIT_SHALLOW TRUE
+  )
+  FetchContent_MakeAvailable(lvgl)
+endif()
+target_include_directories(lvgl PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/menu)
+target_compile_definitions(lvgl PUBLIC LV_CONF_INCLUDE_SIMPLE)
+
+add_library(mabur_player_menu STATIC
+  src/menu/vrx_menu.cpp
+  src/menu/gui_app.c
+  src/menu/gui_styles.c
+  src/menu/config_data.c
+  src/menu/ui_camera.c
+  src/menu/ui_link.c
+  src/menu/ui_recording.c
+  src/menu/ui_telemetry.c
+  src/menu/ui_customization.c
+  src/menu/ui_calibration.c
+  src/menu/ui_advanced.c)
+target_include_directories(mabur_player_menu PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/menu
+  ${CMAKE_SOURCE_DIR}/third_party
+  ${CMAKE_SOURCE_DIR}/third_party/lvgl
+  ${CMAKE_SOURCE_DIR}/toolchain/staging/include)
+target_compile_definitions(mabur_player_menu PUBLIC LV_CONF_INCLUDE_SIMPLE)
+target_link_libraries(mabur_player_menu PUBLIC lvgl mabur_player_core)
+
 add_executable(maburplay
   src/main.cpp
   src/null_backend.cpp)
-target_link_libraries(maburplay PRIVATE mabur_player_core)
+target_link_libraries(maburplay PRIVATE mabur_player_core mabur_player_menu)
 
 if(MABUR_PLAYER_HW)
   target_sources(maburplay PRIVATE

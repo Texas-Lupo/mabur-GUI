@@ -97,6 +97,7 @@ constexpr size_t kTagLen = 8;
 
 constexpr uint8_t kAckKeyMismatch = 0x01;   // DiscAck::flags bit0
 constexpr uint8_t kTelemAuthReject = 0x02;  // Telem::flags bit1
+constexpr uint8_t kTelemArmed = 0x04;       // Telem::flags bit2: FC reports ARMED
 
 // Values hashed into a control frame's tag but never sent on the wire
 // (link pairing): the VRX/VTX nonces from the completed

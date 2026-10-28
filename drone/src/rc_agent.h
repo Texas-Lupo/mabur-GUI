@@ -204,6 +204,8 @@ class RcAgent {
   // command (flight-0011) is countable on the bench and attributable in
   // flightreport, instead of vanishing into an unexplained enh gap.
   bool congestion_shed() const { return shed_level_ > 0; }
+  bool low_power() const { return low_power_active_; }
+  bool is_armed() const { return arm_reported_ && fresh_arm_ && last_armed_; }
   bool have_feedback() const { return have_last_fb_; }
   uint64_t last_feedback_ms() const { return last_fb_ms_; }
   uint64_t rcf_accepted() const { return rcf_accepted_; }
@@ -444,6 +446,7 @@ class RcAgent {
   std::atomic<uint64_t> arm_report_{0};
   bool armed_latched_ = false;
   bool arm_reported_ = false;
+  bool fresh_arm_ = false;
   bool last_armed_ = false;
   uint64_t last_arm_ms_ = 0;
   bool low_power_active_ = false;

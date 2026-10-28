@@ -52,10 +52,9 @@ RingClient::~RingClient() { drop_door_(); }
 // it, so at boot we routinely get here first (the GS boot race). Waiting --
 // rather than exiting, which the respawn wrapper reads as a permanent config
 // error -- keeps the splash up until video can start.
-// Note this blocks the whole player: no OSD and no record button until the
-// ring exists. That matches the old behaviour, which did not reach the main
-// loop either, and there is nothing to show or record without a video source.
-bool RingClient::open(int wait_ms) {
+// When idle_fn is provided (VRX menu), it runs during the wait loop so the
+// user can configure settings and open the menu even if maburgs is delayed or absent.
+bool RingClient::open(int wait_ms, IdleFn idle_fn) {
   if (reader_.open(cfg_.ring_path)) return true;
   if (wait_ms == 0) return false;
   const uint64_t start = now_ms();
@@ -63,7 +62,14 @@ bool RingClient::open(int wait_ms) {
                cfg_.ring_path.c_str());
   uint64_t last_note = start;
   for (;;) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(kRingWaitPollMs));
+    if (idle_fn) {
+      for (int i = 0; i < 10; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        if (!idle_fn(now_ms())) return false;
+      }
+    } else {
+      std::this_thread::sleep_for(std::chrono::milliseconds(kRingWaitPollMs));
+    }
     if (reader_.open(cfg_.ring_path)) {
       std::fprintf(stderr, "maburplay: ring %s appeared after %llu ms\n",
                    cfg_.ring_path.c_str(),

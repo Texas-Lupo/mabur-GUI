@@ -38,6 +38,7 @@
 #include "osd_source.h"
 #include "player_config.h"
 #include "rec_button.h"
+#include "menu/vrx_menu.h"
 #include "rec_control.h"  // maburgs::kRecControlPort
 #include "ring_client.h"
 #include "stream_feeder.h"
@@ -75,6 +76,32 @@ void on_signal(int) { g_stop.store(true); }
 // GPIO (`kill -USR1 $(pidof maburplay)` toggles a recording mid-session).
 std::atomic<bool> g_rec_toggle{false};
 void on_rec_toggle(int) { g_rec_toggle.store(true); }
+
+// SIGUSR2 = toggle VRX configuration menu
+std::atomic<bool> g_menu_toggle{false};
+void on_menu_toggle(int) { g_menu_toggle.store(true); }
+
+bool msp_screen_contains_armed(const mabur::MspScreen& screen) {
+  const int rows = screen.rows();
+  const int cols = screen.cols();
+  for (int r = 0; r < rows; ++r) {
+    std::string row_str;
+    row_str.reserve(cols);
+    for (int c = 0; c < cols; ++c) {
+      char ch = static_cast<char>(screen.cell(r, c) & 0xFF);
+      row_str.push_back(ch);
+    }
+    size_t pos = 0;
+    while ((pos = row_str.find("ARMED", pos)) != std::string::npos) {
+      if (pos >= 3 && row_str.compare(pos - 3, 3, "DIS") == 0) {
+        pos += 5;
+        continue;
+      }
+      return true;
+    }
+  }
+  return false;
+}
 
 // Monotonic milliseconds. Everything the GS overlay measures -- AU arrival
 // jitter, the 1 Hz video/recording marks, the recording clock -- is an
@@ -542,24 +569,15 @@ int main(int argc, char** argv) {
   (void)lut_axis;
 #endif
 
-  // Record button. An accessory: every failure here is non-fatal and said
-  // exactly once. A player that refuses to show video because a pin is
-  // missing is worse than one that shows video without a button -- same
-  // rule the .gfont atlas follows.
-  maburplay::RecButton rec_button;
-  if (cfg.input.rec.configured) {
-    maburplay::RecButtonCfg rbc;
-    rbc.pin = cfg.input.rec.pin;
-    rbc.active_low = cfg.input.rec.active_low;
-    rbc.bias = cfg.input.rec.bias;
-    std::string rberr;
-    if (rec_button.open(rbc, &rberr)) {
-      std::fprintf(stderr, "maburplay: rec button: PIN_%d -> %s line %u, %s, %s\n", rbc.pin,
-                   rec_button.chip_path().c_str(), rec_button.offset(),
-                   rbc.active_low ? "active_low" : "active_high", rbc.bias.c_str());
-    } else {
-      std::fprintf(stderr, "maburplay: rec button: %s -- running without it\n", rberr.c_str());
-    }
+  // VRX Menu and Buttons. Manages 5-way joystick (Center PIN_11, Left PIN_13,
+  // Right PIN_38, Up PIN_16, Down PIN_18) and Rec PIN_32.
+  // Center hold (>= 800ms) toggles menu.
+  maburplay::VrxMenu vrx_menu;
+  std::string menu_err;
+  if (vrx_menu.init(1920, 1080, cfg, &menu_err)) {
+    std::fprintf(stderr, "maburplay: VRX menu initialized\n");
+  } else {
+    std::fprintf(stderr, "maburplay: VRX menu init failed: %s\n", menu_err.c_str());
   }
 
   std::unique_ptr<maburplay::VideoBackend> backend = maburplay::make_backend(cfg.backend);
@@ -1475,6 +1493,46 @@ int main(int argc, char** argv) {
     router.on_event(std::move(ev));
   };
 
+  std::signal(SIGINT, on_signal);
+  std::signal(SIGTERM, on_signal);
+  std::signal(SIGUSR1, on_rec_toggle);
+  std::signal(SIGUSR2, on_menu_toggle);
+
+  maburplay::RingClient::IdleFn menu_idle = [&](uint64_t now) -> bool {
+    if (g_stop.load()) return false;
+    const bool prev_menu_open = vrx_menu.is_open();
+    if (vrx_menu.poll(now) || g_rec_toggle.exchange(false)) {
+      // record toggle not applicable yet without video feed
+    }
+    if (g_menu_toggle.exchange(false)) {
+      vrx_menu.toggle();
+    }
+    const bool cur_menu_open = vrx_menu.is_open();
+    if (prev_menu_open && !cur_menu_open) {
+      if (presenter) {
+        presenter->osd_clear_both();
+        presenter->set_osd_force_commit(true);
+        presenter->commit_osd_if_pending();
+      }
+    }
+#ifdef MABUR_PLAYER_HW
+    if (vrx_menu.is_open()) {
+      if (presenter) presenter->set_osd_force_commit(true);
+      const bool screen_ok =
+          presenter && presenter->osd_available() && !presenter->osd_publish_pending();
+      const maburplay::Surface surf =
+          screen_ok ? presenter->osd_back_surface() : maburplay::Surface{};
+      if (surf.pixels) {
+        if (vrx_menu.render(surf, now)) {
+          presenter->osd_publish();
+        }
+      }
+      if (presenter) presenter->commit_osd_if_pending();
+    }
+#endif
+    return true;
+  };
+
   maburplay::RingClient ring({cfg.ring_path, cfg.socket}, sink);
   // Wait indefinitely for maburgs to create the ring (GS boot race):
   // the init scripts start us milliseconds after maburgs, so
@@ -1482,7 +1540,13 @@ int main(int argc, char** argv) {
   // permanent, because S97maburplay reads our exit 2 as "config error, skip
   // restart". --oneshot is the exception: there the ring is the test fixture,
   // so its absence is a real failure and must not hang the host suite.
-  if (!ring.open(oneshot ? 0 : -1)) {
+  // During the wait, menu_idle runs so the VRX configuration menu is fully
+  // responsive even if maburgs is delayed, stopped, or misconfigured.
+  if (!ring.open(oneshot ? 0 : -1, oneshot ? nullptr : menu_idle)) {
+    if (g_stop.load()) {
+      std::fprintf(stderr, "maburplay: stopped while waiting for ring\n");
+      return 0;
+    }
     std::fprintf(stderr, "maburplay: cannot open ring %s\n", cfg.ring_path.c_str());
     return 2;
   }
@@ -1512,10 +1576,6 @@ int main(int argc, char** argv) {
         maburplay::stream_off_name(feeder.off_reason()));
     return 0;
   }
-
-  std::signal(SIGINT, on_signal);
-  std::signal(SIGTERM, on_signal);
-  std::signal(SIGUSR1, on_rec_toggle);
 
   if (decode_only) {
     // Hardware decode gate (amended per the sid0-join finding above):
@@ -1793,12 +1853,53 @@ int main(int argc, char** argv) {
 #endif
     // One ioctl per iteration (~500/s, microseconds each) -- far under the
     // ~1.5 ms budget tools/bench/gs_osd_bench.cpp polices for this loop.
-    if ((rec_button.is_open() && rec_button.poll(mono_ms())) || g_rec_toggle.exchange(false)) {
+    {
+      const uint64_t t_now = mono_ms();
+      bool drone_connected = false;
+      bool drone_armed = false;
+      if (gs_src) {
+        const maburplay::GsSnapshot& snap = gs_src->snapshot();
+        if (gs_src->have_any() && !gs_src->stale(t_now) && snap.drone_tlm_age_ms &&
+            *snap.drone_tlm_age_ms <= 3000) {
+          drone_connected = true;
+          if (snap.armed) {
+            drone_armed = true;
+          }
+          if (snap.low_power) {
+            drone_armed = false;
+          }
+        }
+      }
+      if (osd_src && osd_src->datagrams() > 0 && !osd_src->stale(t_now)) {
+        drone_connected = true;
+        if (msp_screen_contains_armed(osd_src->screen())) {
+          drone_armed = true;
+        }
+      }
+      // When armed, menu cannot be opened (and closes if open).
+      // When nothing is connected (or disarmed), menu can be accessed.
+      vrx_menu.set_armed_locked(drone_connected && drone_armed);
+    }
+    const bool prev_menu_open = vrx_menu.is_open();
+    if (vrx_menu.poll(mono_ms()) || g_rec_toggle.exchange(false)) {
       if (rec_on) {
         rec_stop();
       } else {
         rec_start();
       }
+    }
+    if (g_menu_toggle.exchange(false)) {
+      vrx_menu.toggle();
+    }
+    const bool cur_menu_open = vrx_menu.is_open();
+    if (prev_menu_open && !cur_menu_open) {
+      if (presenter) {
+        presenter->osd_clear_both();
+        presenter->set_osd_force_commit(true);
+      }
+      composer.reset_screen();
+      gs_needs_render = true;
+      msp_ready = true;
     }
     // Every iteration: sends on change, re-sends each second (CoreControlClient).
     core_ctl.tick(rec_on && rec_vtx, mono_ms());
@@ -2227,43 +2328,53 @@ int main(int argc, char** argv) {
           gs_laid_out = true;
         }
       }
-      maburplay::OsdComposeIn in;
-      if (osd_src && osd_raster) {
-        in.screen = &osd_src->screen();
-        in.msp_fresh = msp_ready;
-        in.msp_stale = msp_stale;
-      }
-      if (gs_src) {
-        in.snap = &gs_src->snapshot();
-        in.gs_stale = gs_stale;
-        in.gs_ps = gs_ps;
-        in.gs_dirty = gs_needs_render;
-      }
-      const bool want = composer.wants(in);
-      // The recording's overlay, at the record size, on its own trigger: the
-      // same input the screen would compose, whether or not the screen can
-      // compose this iteration -- a pending publish holds the screen back,
-      // never the recording. It runs BEFORE the screen half clears
-      // msp_ready/gs_needs_render, and does not clear them itself: a screen
-      // held back by a pending publish still consumes them on its next
-      // composition. A repeat of the same sample draws nothing.
-      if (burn && want) composer.compose_burn(in);
-      if (surf.pixels && want) {
-        const int idx = presenter->osd_back_index();
-        const maburplay::OsdComposeOut out = composer.compose_screen(idx, surf, in);
-        gs_needs_render = false;
-        msp_ready = false;
-        // Unconditional whenever a composition ran, even if it drew
-        // nothing: "nothing differs from this buffer" does not mean the
-        // screen is right -- the screen is the OTHER buffer. With a value
-        // that alternates (fps 60/59/60, an RSSI wobbling by one) each
-        // buffer keeps matching its own last composition, and a publish
-        // gated on "something changed" strands the front buffer on the
-        // wrong sample forever.
-        if (out.published) presenter->osd_publish();
-        if (out.announce_blank)
-          std::fprintf(stderr, "maburplay: osd blanked after %d ms without a snapshot\n",
-                       cfg.osd.stale_ms);
+      if (vrx_menu.is_open()) {
+        if (presenter) presenter->set_osd_force_commit(true);
+        if (surf.pixels) {
+          if (vrx_menu.render(surf, mono_ms())) {
+            presenter->osd_publish();
+          }
+        }
+      } else {
+        if (presenter) presenter->set_osd_force_commit(false);
+        maburplay::OsdComposeIn in;
+        if (osd_src && osd_raster) {
+          in.screen = &osd_src->screen();
+          in.msp_fresh = msp_ready;
+          in.msp_stale = msp_stale;
+        }
+        if (gs_src) {
+          in.snap = &gs_src->snapshot();
+          in.gs_stale = gs_stale;
+          in.gs_ps = gs_ps;
+          in.gs_dirty = gs_needs_render;
+        }
+        const bool want = composer.wants(in);
+        // The recording's overlay, at the record size, on its own trigger: the
+        // same input the screen would compose, whether or not the screen can
+        // compose this iteration -- a pending publish holds the screen back,
+        // never the recording. It runs BEFORE the screen half clears
+        // msp_ready/gs_needs_render, and does not clear them itself: a screen
+        // held back by a pending publish still consumes them on its next
+        // composition. A repeat of the same sample draws nothing.
+        if (burn && want) composer.compose_burn(in);
+        if (surf.pixels && want) {
+          const int idx = presenter->osd_back_index();
+          const maburplay::OsdComposeOut out = composer.compose_screen(idx, surf, in);
+          gs_needs_render = false;
+          msp_ready = false;
+          // Unconditional whenever a composition ran, even if it drew
+          // nothing: "nothing differs from this buffer" does not mean the
+          // screen is right -- the screen is the OTHER buffer. With a value
+          // that alternates (fps 60/59/60, an RSSI wobbling by one) each
+          // buffer keeps matching its own last composition, and a publish
+          // gated on "something changed" strands the front buffer on the
+          // wrong sample forever.
+          if (out.published) presenter->osd_publish();
+          if (out.announce_blank)
+            std::fprintf(stderr, "maburplay: osd blanked after %d ms without a snapshot\n",
+                         cfg.osd.stale_ms);
+        }
       }
     }
 #endif

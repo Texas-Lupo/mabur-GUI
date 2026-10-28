@@ -161,6 +161,8 @@ class DrmPresenter : public PresentSink {
   Surface osd_back_surface();      // CPU-writable; pixels == nullptr if none
   int osd_back_index() const;      // 0/1 -- picks the caller's ShadowGrid
   void osd_publish();              // back buffer is ready; shown on next commit
+  void osd_clear_both();           // immediately zero-fills both dumb buffers to transparent
+  void set_osd_force_commit(bool force); // force standalone OSD commits even if splash is active
   int osd_front_prime_fd() const;  // committed buffer's dmabuf fd (Phase 2)
   // A published back buffer has not been committed yet, or the commit that
   // carried it has not flipped (release thread or housekeeping).

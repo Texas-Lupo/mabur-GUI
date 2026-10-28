@@ -384,4 +384,14 @@ OsdComposeOut OsdComposer::compose(int idx, const Surface& s, const OsdComposeIn
   return out;
 }
 
+void OsdComposer::reset_screen() {
+  shadow_[0] = ShadowGrid{};
+  shadow_[1] = ShadowGrid{};
+  blanked_[0] = true;
+  blanked_[1] = true;
+  screen_blank_ = true;
+  gs_cards_[0] = -1;
+  gs_cards_[1] = -1;
+}
+
 }  // namespace maburplay

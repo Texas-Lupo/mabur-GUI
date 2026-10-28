@@ -126,6 +126,7 @@ class OsdComposer {
   bool gs_live() const { return gs_[0] != nullptr && gs_laid_out_; }
   bool blanked(int idx) const { return blanked_[idx & 1]; }
   bool screen_blank() const { return screen_blank_; }
+  void reset_screen();
 
   // True when a composition would change what the SCREEN shows. Takes no
   // buffer index, deliberately: publishing is what reaches the screen, and

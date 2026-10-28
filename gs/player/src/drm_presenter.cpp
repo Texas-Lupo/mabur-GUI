@@ -388,6 +388,7 @@ struct DrmPresenter::Impl {
   // when the flip is given up on), so osd_publish_pending() -- the
   // drawer's gate, either flag -- never reads false in between.
   std::atomic<bool> osd_flip_inflight{false};
+  std::atomic<bool> osd_force_commit{false};
   bool osd_on_plane = false;  // an OSD fb has been attached at least once
   bool osd_commit_warned = false;
   int osd_fail_streak = 0;             // consecutive OSD-attributed commit failures
@@ -719,6 +720,11 @@ void DrmPresenter::Impl::commit_osd_only() {
   osd_fail_streak = 0;
   osd_back ^= 1;       // swap first:
   osd_dirty = false;   // a drawer that sees this sees the new back index
+
+  if (splash_active && (osd_on_primary || video_on_primary)) {
+    std::fprintf(stderr, "DrmPresenter: OSD committed to primary; dismissing splash\n");
+    free_splash();
+  }
 }
 
 bool DrmPresenter::Impl::init(const std::string& screen_mode, bool want_osd, ReleaseFn rel,
@@ -1842,8 +1848,11 @@ void DrmPresenter::Impl::commit_osd_if_pending() {
   // OSD lives on a different plane above the splash, so this changes
   // nothing there; it only holds off the plane the splash actually owns.
   const uint64_t now = mono_ms();
-  if (osd_dirty && osd_plane_id && osd.ok() && !flip_pending && crtc_active && !splash_active &&
-      now - last_video_commit_ms >= 100 && now - osd_last_commit_ms >= 100) {
+  const bool force = osd_force_commit.load();
+  const uint64_t min_interval = force ? 0 : 100;
+  if (osd_dirty && osd_plane_id && osd.ok() && !flip_pending && crtc_active &&
+      (force || !splash_active) &&
+      now - last_video_commit_ms >= 100 && now - osd_last_commit_ms >= min_interval) {
     commit_osd_only();
   }
 }
@@ -1990,6 +1999,21 @@ int DrmPresenter::osd_back_index() const { return impl_->osd_back; }
 
 void DrmPresenter::osd_publish() {
   if (osd_available()) impl_->osd_dirty = true;
+}
+
+void DrmPresenter::osd_clear_both() {
+  if (!osd_available()) return;
+  for (int i = 0; i < 2; ++i) {
+    Surface s = impl_->osd.cpu(i);
+    if (s.pixels) {
+      std::memset(s.pixels, 0, static_cast<size_t>(s.height) * s.stride_px * sizeof(uint32_t));
+    }
+  }
+  impl_->osd_dirty = true;
+}
+
+void DrmPresenter::set_osd_force_commit(bool force) {
+  if (impl_) impl_->osd_force_commit.store(force);
 }
 
 bool DrmPresenter::osd_publish_pending() const {

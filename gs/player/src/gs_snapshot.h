@@ -72,6 +72,10 @@ struct GsSnapshot {
   // 15 fps) because the FC reports DISARMED. False when the drone block is
   // null/absent (no telemetry yet, older maburgs) or the key is not a bool.
   bool low_power = false;
+  // drone.armed (Telem flags bit2): flight controller is ARMED.
+  bool armed = false;
+  // True when drone telemetry block was present in this snapshot.
+  bool drone_connected = false;
   // drone.rec (VTX recorder): the drone recorder's state
   // (0 off, 1 recording, 2 error) and error code. Empty when the drone
   // block is null/absent or the keys are missing or mistyped.
